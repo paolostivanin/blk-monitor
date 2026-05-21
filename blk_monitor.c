@@ -34,7 +34,7 @@
 #define SECTOR_SIZE 512ULL
 #define MB_DIVISOR (1024.0 * 1024.0)
 
-#define VERSION "1.1.1"
+#define VERSION "1.1.2"
 
 #define EXIT_SUCCESS_IDLE 0
 #define EXIT_ERROR        1
