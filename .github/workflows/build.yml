@@ -1,0 +1,64 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-release:
+    name: Release build (hardening flags)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Verify hardening
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils
+          file ./blk_monitor
+          # Confirm PIE
+          readelf -h ./blk_monitor | grep -E 'Type:\s+DYN'
+          # Confirm RELRO + BIND_NOW
+          readelf -d ./blk_monitor | grep -E 'BIND_NOW|GNU_RELRO' || \
+            (readelf -l ./blk_monitor | grep GNU_RELRO && readelf -d ./blk_monitor | grep BIND_NOW)
+      - name: Smoke
+        run: ./blk_monitor --version && ./blk_monitor --help
+
+  build-debug:
+    name: Debug build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make debug
+      - name: Smoke
+        run: ./blk_monitor --version
+
+  build-asan:
+    name: ASan + UBSan build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make asan
+      - name: Run smoke tests under sanitizers
+        run: ./tests/smoke.sh
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+
+  smoke:
+    name: End-to-end smoke (loopback)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      - name: Build
+        run: make
+      - name: Run smoke tests
+        run: ./tests/smoke.sh
