@@ -1,0 +1,157 @@
+.TH BLK_MONITOR 1 "2026-05-21" "blk_monitor 1.1.1" "User Commands"
+.SH NAME
+blk_monitor \- monitor block device I/O activity and sync when idle
+.SH SYNOPSIS
+.B blk_monitor
+[\fIOPTIONS\fR]
+.I /dev/sdX
+.SH DESCRIPTION
+.B blk_monitor
+reads I/O counters from
+.I /sys/block/<dev>/stat
+at a configurable interval, tracks how long the device has been idle, and
+runs
+.BR sync (2)
+once the idle duration is reached. It is a low-overhead, single-binary
+replacement for shell loops that watch USB or external drives before unmount.
+
+If a partition path is given
+.RB ( /dev/sdb1 ", " /dev/nvme0n1p2 )
+the parent block device is resolved automatically, since
+.I /sys/block
+only exposes whole-device stats.
+
+.B blk_monitor
+has no external dependencies beyond libc and works on any Linux kernel
+2.6.26 or newer.
+
+.SH OPTIONS
+.TP
+.BR \-i ", " \-\-interval " " \fISEC\fR
+Poll interval in seconds. Range: 1\(en60. Default: 2.
+.TP
+.BR \-t ", " \-\-idle\-time " " \fISEC\fR
+Required consecutive idle time in seconds before declaring the device safe.
+Range: 5\(en3600. Default: 10.
+.TP
+.BR \-s ", " \-\-sync
+Call
+.BR sync (2)
+before exiting (default).
+.TP
+.BR \-S ", " \-\-no\-sync
+Skip
+.BR sync (2)
+on exit. Useful for monitor-only mode or unprivileged runs.
+.TP
+.BR \-q ", " \-\-quiet
+Suppress the live UI; only the final status line is printed.
+.TP
+.BR \-v ", " \-\-verbose
+Print one line per poll instead of the in-place progress bar.
+.TP
+.BR \-j ", " \-\-json
+Emit one JSON object per poll on stdout, plus a terminal
+.RI { \(dqevent\(dq:\(dqidle\(dq,... }
+line when the idle threshold is reached. stdout is line-buffered, so
+consumers (e.g.
+.BR jq (1) )
+see each record immediately.
+.TP
+.BR \-C ", " \-\-no\-color
+Disable ANSI colors. Colors are also disabled automatically when stdout
+is not a terminal or when the
+.B NO_COLOR
+environment variable is set.
+.TP
+.BR \-h ", " \-\-help
+Print usage information and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version string and exit.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Device became idle for the required duration (and was synced if
+.B -s
+was enabled).
+.TP
+.B 1
+Error: invalid arguments, device not found / not a block device, read or
+write failure.
+.TP
+.B 2
+Interrupted by
+.B SIGINT
+or
+.B SIGTERM
+before the idle threshold was reached.
+
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+If set (to any value), ANSI colors are disabled, as if
+.B -C
+were passed. See
+.UR https://no\-color.org
+.UE .
+
+.SH EXAMPLES
+Monitor a USB drive with default timings:
+.PP
+.RS 4
+.nf
+sudo blk_monitor /dev/sdb
+.fi
+.RE
+.PP
+Quick mode \(en check every second, declare safe after 5\ s idle:
+.PP
+.RS 4
+.nf
+sudo blk_monitor -i 1 -t 5 /dev/sdb
+.fi
+.RE
+.PP
+Pass a partition; the parent device is resolved automatically:
+.PP
+.RS 4
+.nf
+sudo blk_monitor /dev/nvme0n1p2
+.fi
+.RE
+.PP
+Stream JSON to
+.BR jq (1)
+in real time:
+.PP
+.RS 4
+.nf
+sudo blk_monitor -j --no-sync -i 1 -t 5 /dev/sdb | jq -c .
+.fi
+.RE
+
+.SH FILES
+.TP
+.I /sys/block/<dev>/stat
+The kernel's per-device I/O counters. The 11-field format introduced in
+Linux 2.6.26 is required.
+
+.SH SEE ALSO
+.BR sync (2),
+.BR sync (8),
+.BR umount (8),
+.BR udisks (8),
+.BR losetup (8)
+
+.SH AUTHOR
+Paolo Stivanin
+
+.SH REPORTING BUGS
+Report bugs at
+.UR https://github.com/paolostivanin/blk-monitor/issues
+.UE .
+
+.SH LICENSE
+MIT.
