@@ -119,8 +119,12 @@ static void cleanup_terminal(void) {
         fputs(SHOW_CURSOR, stdout);
         cursor_hidden = false;
     }
-    fputs(COLOR_RESET, stdout);
-    putchar('\n');
+    /* Only emit ANSI reset / trailing newline when stdout is a terminal.
+     * In JSON / piped mode the escape sequence would corrupt the output. */
+    if (isatty(STDOUT_FILENO)) {
+        fputs(COLOR_RESET, stdout);
+        putchar('\n');
+    }
 }
 
 static void print_help(const char *program_name) {
