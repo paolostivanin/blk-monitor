@@ -34,7 +34,7 @@
 #define SECTOR_SIZE 512ULL
 #define MB_DIVISOR (1024.0 * 1024.0)
 
-#define VERSION "1.1.0"
+#define VERSION "1.1.1"
 
 #define EXIT_SUCCESS_IDLE 0
 #define EXIT_ERROR        1
@@ -102,6 +102,16 @@ static void setup_signals(void) {
     if (sigaction(SIGTERM, &sa, NULL) != 0) {
         fprintf(stderr, "Warning: Failed to set SIGTERM handler: %s\n", strerror(errno));
     }
+
+    /* Ignore SIGPIPE so a downstream consumer closing the pipe (e.g. `... | head`)
+     * surfaces as a write error we can handle, instead of killing the process. */
+    struct sigaction ign = {0};
+    ign.sa_handler = SIG_IGN;
+    sigemptyset(&ign.sa_mask);
+    ign.sa_flags = 0;
+    if (sigaction(SIGPIPE, &ign, NULL) != 0) {
+        fprintf(stderr, "Warning: Failed to ignore SIGPIPE: %s\n", strerror(errno));
+    }
 }
 
 static void cleanup_terminal(void) {
@@ -130,12 +140,13 @@ static void print_help(const char *program_name) {
     printf("  -V, --version        Show version\n");
 }
 
-static int parse_int_arg(const char *arg, const char *name) {
+static int parse_int_arg(const char *arg, const char *name, int min, int max) {
     char *endptr;
     errno = 0;
     long val = strtol(arg, &endptr, 10);
-    if (errno != 0 || *endptr != '\0' || endptr == arg || val <= 0 || val > INT_MAX) {
-        fprintf(stderr, "Error: Invalid positive integer for %s: %s\n", name, arg);
+    if (errno != 0 || *endptr != '\0' || endptr == arg || val < (long)min || val > (long)max) {
+        fprintf(stderr, "Error: %s must be an integer between %d and %d (got: %s)\n",
+                name, min, max, arg);
         exit(1);
     }
     return (int)val;
@@ -343,7 +354,10 @@ static int monitor_loop(const Config *cfg) {
             time_t now = time(NULL);
             struct tm *tm_info = localtime(&now);
             char time_buf[64];
-            strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%S%z", tm_info);
+            if (tm_info == NULL ||
+                strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%S%z", tm_info) == 0) {
+                snprintf(time_buf, sizeof(time_buf), "%lld", (long long)now);
+            }
             printf("{\"timestamp\":\"%s\",\"device\":\"%s\","
                    "\"read_mb_s\":%.2f,\"write_mb_s\":%.2f,"
                    "\"active\":%s,\"idle_seconds\":%d,"
@@ -354,6 +368,11 @@ static int monitor_loop(const Config *cfg) {
                    idle_count * cfg->poll_interval,
                    cfg->idle_duration,
                    curr.io_in_progress);
+            if (ferror(stdout)) {
+                clearerr(stdout);
+                close(fd);
+                return EXIT_ERROR;
+            }
         } else if (cfg->verbose) {
             printf("R: %.2f MB/s | W: %.2f MB/s | Active: %d | Idle: %d/%d\n",
                    read_speed, write_speed, is_active, idle_count, required_periods);
@@ -365,6 +384,11 @@ static int monitor_loop(const Config *cfg) {
             if (cfg->json_output) {
                 printf("{\"event\":\"idle\",\"device\":\"%s\",\"synced\":%s}\n",
                        cfg->device_name, cfg->auto_sync ? "true" : "false");
+                if (ferror(stdout)) {
+                    clearerr(stdout);
+                    close(fd);
+                    return EXIT_ERROR;
+                }
             } else if (!cfg->quiet) {
                 printf("\n\n%sDevice idle for %d seconds.%s\n",
                     cfg->no_color ? "" : COLOR_GREEN, cfg->idle_duration, cfg->no_color ? "" : COLOR_RESET);
@@ -393,6 +417,10 @@ static int monitor_loop(const Config *cfg) {
 }
 
 int main(int argc, char *argv[]) {
+    /* Line-buffer stdout so JSON/verbose output reaches pipes (jq, log shippers)
+     * immediately rather than waiting for the 4-8 KB fully-buffered chunk. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     Config cfg = {0};
     cfg.poll_interval = DEFAULT_POLL_INTERVAL;
     cfg.idle_duration = DEFAULT_IDLE_DURATION;
@@ -415,8 +443,10 @@ int main(int argc, char *argv[]) {
     int opt;
     while ((opt = getopt_long(argc, argv, "i:t:sjqvCShV", long_options, NULL)) != -1) {
         switch (opt) {
-            case 'i': cfg.poll_interval = parse_int_arg(optarg, "interval"); break;
-            case 't': cfg.idle_duration = parse_int_arg(optarg, "idle-time"); break;
+            case 'i': cfg.poll_interval = parse_int_arg(optarg, "interval",
+                                                         MIN_POLL_INTERVAL, MAX_POLL_INTERVAL); break;
+            case 't': cfg.idle_duration = parse_int_arg(optarg, "idle-time",
+                                                         MIN_IDLE_DURATION, MAX_IDLE_DURATION); break;
             case 's': cfg.auto_sync = true; break;
             case 'S': cfg.auto_sync = false; break;
             case 'q': cfg.quiet = true; break;
@@ -434,12 +464,13 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Input Validation
-    if (cfg.poll_interval < MIN_POLL_INTERVAL) cfg.poll_interval = MIN_POLL_INTERVAL;
-    if (cfg.poll_interval > MAX_POLL_INTERVAL) cfg.poll_interval = MAX_POLL_INTERVAL;
-    if (cfg.idle_duration < MIN_IDLE_DURATION) cfg.idle_duration = MIN_IDLE_DURATION;
-    if (cfg.idle_duration > MAX_IDLE_DURATION) cfg.idle_duration = MAX_IDLE_DURATION;
-    if (cfg.idle_duration < cfg.poll_interval) cfg.idle_duration = cfg.poll_interval;
+    /* -i / -t bounds are enforced in parse_int_arg(); only the derived constraint
+     * idle_duration >= poll_interval needs adjustment, and we tell the user. */
+    if (cfg.idle_duration < cfg.poll_interval) {
+        fprintf(stderr, "Notice: idle-time (%ds) is less than interval (%ds); raising to %ds.\n",
+                cfg.idle_duration, cfg.poll_interval, cfg.poll_interval);
+        cfg.idle_duration = cfg.poll_interval;
+    }
     if (!isatty(STDOUT_FILENO) || getenv("NO_COLOR") != NULL) cfg.no_color = true;
     if (cfg.json_output) cfg.no_color = true;
 
