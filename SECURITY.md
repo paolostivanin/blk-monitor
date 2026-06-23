@@ -6,7 +6,8 @@ Only the latest published release receives security fixes.
 
 | Version | Supported |
 |---------|-----------|
-| 1.1.x   | yes       |
+| 1.2.x   | yes       |
+| 1.1.x   | no        |
 | 1.0.x   | no        |
 | < 1.0   | no        |
 
@@ -27,14 +28,15 @@ high-severity findings.
 
 ## Scope
 
-`blk_monitor` is a small Linux CLI that reads `/sys/block/<dev>/stat` and calls
-`sync(2)`. In-scope concerns include, for example:
+`blk_monitor` is a small Linux CLI that reads block statistics and can call
+the unprivileged, system-wide `sync(2)`. It does not unmount or eject devices.
+In-scope concerns include, for example:
 
 - Path-traversal or symlink attacks via the user-supplied device path
 - Memory-safety issues (overflow, OOB read/write, use-after-free, double-free)
 - Format-string or integer-conversion issues
-- Privilege-escalation paths when the binary is run with `sudo` or
-  `cap_sys_admin+ep`
+- Incorrect safety claims or state reporting that could cause data loss
+- Privilege-escalation paths introduced by packaging or deployment
 - Signal-handling bugs that could leak state or hang the terminal
 
 Out of scope:

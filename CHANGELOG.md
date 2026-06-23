@@ -4,6 +4,39 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-23
+
+### Changed
+- Corrected the product contract: an idle result does not unmount, eject, power
+  off, or guarantee safe physical removal.
+- `sync()` remains enabled by default but is documented as unprivileged and
+  system-wide; removed root and `CAP_SYS_ADMIN` guidance.
+- The final JSON event is emitted after `sync()` and now reports
+  `sync_performed`, `sync_scope`, and `unmount_performed`.
+- Quiet mode emits exactly one accurate final status line; redirected default
+  output is plain line-oriented text.
+- Separate release, debug, sanitizer, unit, and sanitizer-unit artifacts prevent
+  build variants from being reused or installed accidentally.
+
+### Fixed
+- All stdout paths now detect write and flush failures.
+- Device validation now distinguishes missing paths, non-block files, overlong
+  paths, and unavailable sysfs statistics without stale `errno` messages.
+- Block-stat parsing supports 11, 15, and 17-or-more fields, including discard
+  and flush activity.
+- Counter decreases are treated as device resets/activity without unsigned
+  underflow.
+- Idle duration reports actual polling granularity when the threshold is not
+  divisible by the interval.
+
+### Testing
+- Added unit coverage for legacy, discard, flush, future, malformed, overflow,
+  reset, and activity scenarios.
+- Expanded CLI tests for output failures, quiet/JSON contracts, plain redirected
+  output, SIGPIPE status, and polling granularity.
+- CI builds with GCC and Clang, runs sanitizers and static analysis, verifies
+  hardening and installation, and skips unavailable loopback prerequisites.
+
 ## [1.1.2] - 2026-05-21
 
 ### Fixed
@@ -68,13 +101,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`-Wl,-z,relro,-z,now`) added to the production build.
 - `sigaction()` failures now warn instead of failing silently.
 
-## [1.0.0] - 2026
+## [1.0.0] - 2026-02-19
 
 ### Added
 - Initial release: poll-based block-device I/O monitor with `sync()` on idle.
 - CLI: `-i`, `-t`, `-s`, `-S`, `-q`, `-v`, `-C`, `-h`, `-V`.
 - Color-coded progress bar UI with cursor-hidden full-screen mode.
 
+[1.2.0]: https://github.com/paolostivanin/blk-monitor/compare/v1.1.2...v1.2.0
+[1.1.2]: https://github.com/paolostivanin/blk-monitor/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/paolostivanin/blk-monitor/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/paolostivanin/blk-monitor/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/paolostivanin/blk-monitor/releases/tag/v1.0.0

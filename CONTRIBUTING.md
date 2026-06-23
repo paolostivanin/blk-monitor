@@ -6,11 +6,14 @@ Thanks for your interest in `blk-monitor`. The project is intentionally small
 ## Building
 
 ```bash
-make            # Release build with full hardening
-make debug      # Debug build with symbols
-make asan       # AddressSanitizer + UBSan for development
-make check      # Run the smoke test suite
-make clean      # Remove the binary
+make            # Release: ./blk_monitor
+make debug      # Debug: ./blk_monitor-debug
+make asan       # ASan/UBSan: ./blk_monitor-asan
+make check      # Unit and smoke tests
+make check-asan # Sanitizer unit and smoke tests
+make check-e2e  # Loopback tests when available
+make lint       # ShellCheck and clang-tidy
+make clean      # Remove generated binaries
 ```
 
 Releases must compile cleanly under the release `CFLAGS` — no warnings, no
@@ -22,10 +25,10 @@ suppressions.
 make check
 ```
 
-The suite covers CLI plumbing and argument validation everywhere, plus
-loopback-device end-to-end checks when `losetup` and root (or `sudo`) are
-available. Loopback tests are skipped automatically if those prerequisites are
-missing.
+The suite covers parsing, activity detection, CLI plumbing, output failures,
+and argument validation. Loopback-device end-to-end checks run when `losetup`
+and root or non-interactive `sudo` are available. Missing loopback
+prerequisites are reported as skipped locally and in CI.
 
 ## Code style
 
@@ -46,11 +49,12 @@ missing.
 3. Update `README.md`, `blk_monitor.1`, and `CHANGELOG.md` together with code
    changes that affect them.
 4. Add a smoke-test case for new behaviors when feasible.
-5. Run `make check` locally and confirm CI is green before requesting review.
+5. Run `make check`, `make check-asan`, and `make lint` locally when their
+   required tools are available, then confirm CI is green.
 
 ## Releases
 
-1. Bump `#define VERSION` in `blk_monitor.c`.
+1. Bump `#define VERSION` in `blk_monitor.c` and the man-page header.
 2. Add a `CHANGELOG.md` entry.
 3. Commit, then `git tag -a vX.Y.Z -m "Version X.Y.Z"`.
 4. `git push && git push --tags`.

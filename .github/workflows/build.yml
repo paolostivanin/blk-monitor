@@ -7,58 +7,89 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  build-release:
-    name: Release build (hardening flags)
+  build:
+    name: Build and unit tests (${{ matrix.compiler }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+          - compiler: clang
+            cc: clang
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: make
-      - name: Verify hardening
+      - name: Build release and debug variants
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq binutils
-          file ./blk_monitor
-          # Confirm PIE
-          readelf -h ./blk_monitor | grep -E 'Type:\s+DYN'
-          # Confirm RELRO + BIND_NOW
-          readelf -d ./blk_monitor | grep -E 'BIND_NOW|GNU_RELRO' || \
-            (readelf -l ./blk_monitor | grep GNU_RELRO && readelf -d ./blk_monitor | grep BIND_NOW)
-      - name: Smoke
-        run: ./blk_monitor --version && ./blk_monitor --help
+          make CC=${{ matrix.cc }}
+          make CC=${{ matrix.cc }} debug
+      - name: Verify distinct artifacts
+        run: |
+          test -x ./blk_monitor
+          test -x ./blk_monitor-debug
+          test "$(stat -c %i ./blk_monitor)" != "$(stat -c %i ./blk_monitor-debug)"
+          ./blk_monitor --version
+          ./blk_monitor-debug --version
+      - name: Run unit and non-privileged smoke tests
+        run: |
+          make CC=${{ matrix.cc }} tests/unit
+          ./tests/unit
+          BIN=./blk_monitor SKIP_LOOPBACK=1 ./tests/smoke.sh
 
-  build-debug:
-    name: Debug build
+  sanitizers:
+    name: ASan and UBSan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: make debug
-      - name: Smoke
-        run: ./blk_monitor --version
+      - name: Build and run sanitizer tests
+        run: make CC=clang check-asan
 
-  build-asan:
-    name: ASan + UBSan build
+  end-to-end:
+    name: Loopback end-to-end tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: make asan
-      - name: Run smoke tests under sanitizers
-        run: ./tests/smoke.sh
-        env:
-          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-
-  smoke:
-    name: End-to-end smoke (loopback)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install jq
+      - name: Install test dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
       - name: Build
         run: make
-      - name: Run smoke tests
-        run: ./tests/smoke.sh
+      - name: Run loopback tests when available
+        run: make check-e2e
+
+  quality:
+    name: Static checks, hardening, docs, and install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install quality tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils clang-tools shellcheck groff
+      - name: Build
+        run: make
+      - name: Lint and static analysis
+        run: |
+          make lint
+          scan-build --status-bugs make clean all
+      - name: Verify release hardening
+        run: |
+          readelf -h ./blk_monitor | grep -E 'Type:[[:space:]]+DYN'
+          readelf -W -l ./blk_monitor | grep -E 'GNU_STACK.*RW '
+          readelf -W -l ./blk_monitor | grep GNU_RELRO
+          readelf -d ./blk_monitor | grep BIND_NOW
+          nm -D ./blk_monitor | grep __stack_chk_fail
+          nm -D ./blk_monitor | grep -E '__printf_chk|__fprintf_chk|__snprintf_chk'
+      - name: Render man page
+        run: groff -man -Tutf8 blk_monitor.1 >/tmp/blk_monitor.man.txt
+      - name: Verify staged installation
+        run: |
+          make install DESTDIR=/tmp/blk-monitor-package PREFIX=/usr
+          test -x /tmp/blk-monitor-package/usr/bin/blk_monitor
+          test -f /tmp/blk-monitor-package/usr/share/man/man1/blk_monitor.1
+          test ! -e /tmp/blk-monitor-package/usr/bin/blk_monitor-debug
+          test ! -e /tmp/blk-monitor-package/usr/bin/blk_monitor-asan

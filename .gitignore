@@ -29,6 +29,11 @@
 *.dylib
 
 # Executables
+blk_monitor
+blk_monitor-debug
+blk_monitor-asan
+tests/unit
+tests/unit-asan
 *.exe
 *.out
 *.app

@@ -1,157 +1,143 @@
-.TH BLK_MONITOR 1 "2026-05-21" "blk_monitor 1.1.2" "User Commands"
+.TH BLK_MONITOR 1 "2026-06-23" "blk_monitor 1.2.0" "User Commands"
 .SH NAME
-blk_monitor \- monitor block device I/O activity and sync when idle
+blk_monitor \- report when observed block-device I/O has been idle
 .SH SYNOPSIS
 .B blk_monitor
 [\fIOPTIONS\fR]
-.I /dev/sdX
+.I /dev/DEVICE
 .SH DESCRIPTION
 .B blk_monitor
-reads I/O counters from
-.I /sys/block/<dev>/stat
-at a configurable interval, tracks how long the device has been idle, and
-runs
+samples Linux block statistics and exits after a configurable period with no
+observed I/O activity.
+By default it calls
 .BR sync (2)
-once the idle duration is reached. It is a low-overhead, single-binary
-replacement for shell loops that watch USB or external drives before unmount.
-
-If a partition path is given
-.RB ( /dev/sdb1 ", " /dev/nvme0n1p2 )
-the parent block device is resolved automatically, since
-.I /sys/block
-only exposes whole-device stats.
-
-.B blk_monitor
-has no external dependencies beyond libc and works on any Linux kernel
-2.6.26 or newer.
-
+after the idle threshold is reached.
+.PP
+The program does not unmount filesystems, eject media, or power off hardware.
+An idle result is not a safe-removal guarantee.
+Unmount or eject the device before physically disconnecting it.
+.PP
+Partitions are resolved to their parent block device through
+.IR /sys/class/block .
+The parser supports legacy statistics and optional discard and flush fields.
 .SH OPTIONS
 .TP
 .BR \-i ", " \-\-interval " " \fISEC\fR
 Poll interval in seconds. Range: 1\(en60. Default: 2.
 .TP
 .BR \-t ", " \-\-idle\-time " " \fISEC\fR
-Required consecutive idle time in seconds before declaring the device safe.
-Range: 5\(en3600. Default: 10.
+Required consecutive observed idle time. Range: 5\(en3600. Default: 10.
+The reported duration may exceed this value by less than one poll interval.
 .TP
 .BR \-s ", " \-\-sync
-Call
+Call the system-wide
 .BR sync (2)
-before exiting (default).
+function after reaching the idle threshold. This is the default.
 .TP
 .BR \-S ", " \-\-no\-sync
-Skip
-.BR sync (2)
-on exit. Useful for monitor-only mode or unprivileged runs.
+Do not call
+.BR sync (2).
 .TP
 .BR \-q ", " \-\-quiet
-Suppress the live UI; only the final status line is printed.
+Suppress samples and print exactly one final status line.
 .TP
 .BR \-v ", " \-\-verbose
-Print one line per poll instead of the in-place progress bar.
+Print one status line per poll.
 .TP
 .BR \-j ", " \-\-json
-Emit one JSON object per poll on stdout, plus a terminal
-.RI { \(dqevent\(dq:\(dqidle\(dq,... }
-line when the idle threshold is reached. stdout is line-buffered, so
-consumers (e.g.
-.BR jq (1) )
-see each record immediately.
+Print one JSON object per poll and a final idle event after any requested
+.BR sync (2)
+has completed.
+The final object includes
+.IR sync_performed ,
+.I sync_scope
+set to
+.IR system ,
+and
+.I unmount_performed
+set to
+.IR false .
 .TP
 .BR \-C ", " \-\-no\-color
-Disable ANSI colors. Colors are also disabled automatically when stdout
-is not a terminal or when the
+Disable ANSI colors.
+Colors are also disabled when stdout is not a terminal or
 .B NO_COLOR
-environment variable is set.
+is set.
 .TP
 .BR \-h ", " \-\-help
-Print usage information and exit.
+Print help and exit.
 .TP
 .BR \-V ", " \-\-version
-Print the version string and exit.
-
+Print the version and exit.
 .SH EXIT STATUS
 .TP
 .B 0
-Device became idle for the required duration (and was synced if
-.B -s
-was enabled).
+The observed I/O-idle threshold was reached.
 .TP
 .B 1
-Error: invalid arguments, device not found / not a block device, read or
-write failure.
+Invalid input, unavailable or malformed statistics, or output failure.
 .TP
 .B 2
 Interrupted by
 .B SIGINT
 or
 .B SIGTERM
-before the idle threshold was reached.
-
+before reaching the threshold.
+.SH SAFETY AND PRIVILEGES
+Monitoring and
+.BR sync (2)
+do not require root.
+Do not grant this program
+.BR CAP_SYS_ADMIN .
+.PP
+.BR sync (2)
+flushes all mounted filesystems and does not unmount the monitored device.
+Other processes can issue new writes after the idle result.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
-If set (to any value), ANSI colors are disabled, as if
-.B -C
-were passed. See
-.UR https://no\-color.org
-.UE .
-
+Disable ANSI colors.
 .SH EXAMPLES
-Monitor a USB drive with default timings:
 .PP
+Monitor a whole device:
 .RS 4
 .nf
-sudo blk_monitor /dev/sdb
+blk_monitor /dev/sdb
 .fi
 .RE
 .PP
-Quick mode \(en check every second, declare safe after 5\ s idle:
-.PP
+Monitor a partition through its parent device:
 .RS 4
 .nf
-sudo blk_monitor -i 1 -t 5 /dev/sdb
+blk_monitor -i 1 -t 5 /dev/nvme0n1p2
 .fi
 .RE
 .PP
-Pass a partition; the parent device is resolved automatically:
-.PP
+Stream JSON without running
+.BR sync (2):
 .RS 4
 .nf
-sudo blk_monitor /dev/nvme0n1p2
+blk_monitor --json --no-sync /dev/sdb | jq -c .
 .fi
 .RE
-.PP
-Stream JSON to
-.BR jq (1)
-in real time:
-.PP
-.RS 4
-.nf
-sudo blk_monitor -j --no-sync -i 1 -t 5 /dev/sdb | jq -c .
-.fi
-.RE
-
 .SH FILES
 .TP
-.I /sys/block/<dev>/stat
-The kernel's per-device I/O counters. The 11-field format introduced in
-Linux 2.6.26 is required.
-
+.I /sys/class/block/<device>
+Used to resolve partitions to parent devices.
+.TP
+.I /sys/block/<device>/stat
+Kernel block statistics.
 .SH SEE ALSO
 .BR sync (2),
 .BR sync (8),
 .BR umount (8),
-.BR udisks (8),
+.BR udisksctl (1),
 .BR losetup (8)
-
 .SH AUTHOR
 Paolo Stivanin
-
 .SH REPORTING BUGS
 Report bugs at
 .UR https://github.com/paolostivanin/blk-monitor/issues
 .UE .
-
 .SH LICENSE
 MIT.
