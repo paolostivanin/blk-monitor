@@ -15,6 +15,8 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
+EXPECTED_VERSION=${EXPECTED_VERSION:-$(sed -n 's/^VERSION *= *//p' Makefile)}
+
 pass=0
 fail=0
 skipped=0
@@ -70,8 +72,18 @@ expect_output_match() {
 hdr "CLI plumbing"
 expect_exit 0 "--version exits 0" "$BIN" --version
 expect_exit 0 "--help exits 0" "$BIN" --help
-expect_output_match '^blk_monitor 1\.2\.0$' \
-    "--version is 1.2.0" "$BIN" --version
+expect_output_match "^blk_monitor ${EXPECTED_VERSION//./\\.}\$" \
+    "--version matches Makefile ($EXPECTED_VERSION)" "$BIN" --version
+if grep -q "blk_monitor $EXPECTED_VERSION" blk_monitor.1; then
+    ok "man page version matches"
+else
+    bad "man page version matches"
+fi
+if grep -q "^## \[$EXPECTED_VERSION\]" CHANGELOG.md; then
+    ok "CHANGELOG has an entry for the version"
+else
+    bad "CHANGELOG has an entry for the version"
+fi
 expect_output_match 'does not unmount or eject' \
     "--help states the safety boundary" "$BIN" --help
 expect_output_match -- '-j, --json' \
@@ -91,6 +103,37 @@ expect_output_match 'does not exist' \
     "missing path has precise error" "$BIN" /tmp/blk-monitor-not-a-device
 expect_output_match 'not a block device' \
     "regular file has precise error" "$BIN" /etc/hostname
+
+expect_exit 1 "--quiet with --verbose rejected" "$BIN" -q -v /dev/null
+expect_exit 1 "--json with --verbose rejected" "$BIN" -j -v /dev/null
+expect_output_match 'mutually exclusive' \
+    "conflicting flags have precise error" "$BIN" -q -v /dev/null
+
+hdr "Signal handling"
+any_block_device=
+for candidate in /dev/nvme0n1 /dev/sda /dev/vda /dev/xvda /dev/loop0; do
+    if [[ -b $candidate && -r /sys/block/${candidate##*/}/stat ]]; then
+        any_block_device=$candidate
+        break
+    fi
+done
+if [[ -z $any_block_device ]]; then
+    skip "SIGTERM interrupts the poll wait" "no readable block device"
+else
+    "$BIN" -q --no-sync -i 30 -t 60 "$any_block_device" >/dev/null 2>&1 &
+    monitor_pid=$!
+    sleep 1
+    start_ms=$(date +%s%N)
+    kill -TERM "$monitor_pid"
+    wait "$monitor_pid"
+    monitor_status=$?
+    elapsed_ms=$((($(date +%s%N) - start_ms) / 1000000))
+    if [[ $monitor_status -eq 2 && $elapsed_ms -lt 2000 ]]; then
+        ok "SIGTERM interrupts the poll wait promptly (exit 2, ${elapsed_ms}ms)"
+    else
+        bad "SIGTERM interrupts the poll wait promptly (exit $monitor_status, ${elapsed_ms}ms)"
+    fi
+fi
 
 hdr "Output failures"
 if "$BIN" --help >/dev/full 2>/dev/null; then

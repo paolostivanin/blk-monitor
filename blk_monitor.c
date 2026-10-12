@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -17,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -30,8 +32,11 @@
 #define SECTOR_SIZE 512ULL
 #define MB_DIVISOR (1024.0 * 1024.0)
 #define STAT_BUF_SIZE 1024
+#define MIN_ELAPSED_SECONDS 0.001
 
-#define VERSION "1.2.0"
+#ifndef VERSION
+#define VERSION "unknown" /* normally supplied by the Makefile */
+#endif
 
 #define EXIT_SUCCESS_IDLE 0
 #define EXIT_ERROR 1
@@ -58,14 +63,6 @@ typedef struct {
     bool json_output;
     bool interactive;
 } Config;
-
-typedef enum {
-    DEVICE_RESOLVE_OK = 0,
-    DEVICE_RESOLVE_NOT_FOUND,
-    DEVICE_RESOLVE_NOT_BLOCK,
-    DEVICE_RESOLVE_PATH_TOO_LONG,
-    DEVICE_RESOLVE_SYSFS_UNAVAILABLE
-} DeviceResolveResult;
 
 static volatile sig_atomic_t keep_running = 1;
 static bool cursor_hidden = false;
@@ -106,9 +103,10 @@ static void handle_signal(int signal_number) {
     keep_running = 0;
 }
 
-static void setup_signals(void) {
+static void setup_signals(sigset_t *wait_mask) {
     struct sigaction action = {0};
     struct sigaction ignore = {0};
+    sigset_t block;
 
     action.sa_handler = handle_signal;
     sigemptyset(&action.sa_mask);
@@ -119,6 +117,19 @@ static void setup_signals(void) {
     if (sigaction(SIGTERM, &action, NULL) != 0) {
         fprintf(stderr, "Warning: failed to set SIGTERM handler: %s\n",
                 strerror(errno));
+    }
+
+    /*
+     * Keep SIGINT/SIGTERM blocked outside wait_interval() so delivery is
+     * race-free; wait_mask is the original mask used while waiting.
+     */
+    sigemptyset(&block);
+    sigaddset(&block, SIGINT);
+    sigaddset(&block, SIGTERM);
+    if (sigprocmask(SIG_BLOCK, &block, wait_mask) != 0) {
+        fprintf(stderr, "Warning: failed to block signals: %s\n",
+                strerror(errno));
+        (void)sigprocmask(SIG_SETMASK, NULL, wait_mask);
     }
 
     ignore.sa_handler = SIG_IGN;
@@ -193,13 +204,7 @@ static const char *path_basename(const char *path) {
 static DeviceResolveResult resolve_device_paths(Config *config,
                                                 const char *input_path) {
     char resolved_device[PATH_MAX];
-    char class_path[PATH_MAX];
-    char resolved_class[PATH_MAX];
-    char parent_path[PATH_MAX];
-    const char *device_name;
     struct stat status;
-    bool is_partition;
-    int written;
 
     if (realpath(input_path, resolved_device) == NULL) {
         return errno == ENAMETOOLONG ? DEVICE_RESOLVE_PATH_TOO_LONG
@@ -215,49 +220,9 @@ static DeviceResolveResult resolve_device_paths(Config *config,
                     resolved_device) != 0) {
         return DEVICE_RESOLVE_PATH_TOO_LONG;
     }
-
-    device_name = path_basename(resolved_device);
-    if (*device_name == '\0' ||
-        copy_string(config->device_name, sizeof(config->device_name),
-                    device_name) != 0) {
-        return DEVICE_RESOLVE_PATH_TOO_LONG;
-    }
-    written = snprintf(class_path, sizeof(class_path), "/sys/class/block/%s",
-                       config->device_name);
-    if (written < 0 || (size_t)written >= sizeof(class_path)) {
-        return DEVICE_RESOLVE_PATH_TOO_LONG;
-    }
-    if (realpath(class_path, resolved_class) == NULL) {
-        return DEVICE_RESOLVE_SYSFS_UNAVAILABLE;
-    }
-
-    written = snprintf(parent_path, sizeof(parent_path), "%s/partition",
-                       class_path);
-    if (written < 0 || (size_t)written >= sizeof(parent_path)) {
-        return DEVICE_RESOLVE_PATH_TOO_LONG;
-    }
-    is_partition = access(parent_path, F_OK) == 0;
-    if (is_partition) {
-        char *slash = strrchr(resolved_class, '/');
-        if (slash == NULL || slash == resolved_class) {
-            return DEVICE_RESOLVE_SYSFS_UNAVAILABLE;
-        }
-        *slash = '\0';
-        if (copy_string(config->device_name, sizeof(config->device_name),
-                        path_basename(resolved_class)) != 0) {
-            return DEVICE_RESOLVE_PATH_TOO_LONG;
-        }
-    }
-
-    written = snprintf(config->sys_path, sizeof(config->sys_path),
-                       "/sys/block/%s/stat", config->device_name);
-    if (written < 0 || (size_t)written >= sizeof(config->sys_path)) {
-        return DEVICE_RESOLVE_PATH_TOO_LONG;
-    }
-    if (access(config->sys_path, R_OK) != 0) {
-        return DEVICE_RESOLVE_SYSFS_UNAVAILABLE;
-    }
-    return DEVICE_RESOLVE_OK;
+    return blk_sysfs_resolve("/sys", path_basename(resolved_device),
+                             config->device_name, sizeof(config->device_name),
+                             config->sys_path, sizeof(config->sys_path));
 }
 
 static void print_device_error(DeviceResolveResult result,
@@ -409,21 +374,117 @@ static int print_final_status(const Config *config, int idle_seconds) {
         config->no_color ? "" : COLOR_RESET);
 }
 
-static int monitor_loop(const Config *config) {
+static double elapsed_seconds(const struct timespec *from,
+                              const struct timespec *to) {
+    return (double)(to->tv_sec - from->tv_sec) +
+           (double)(to->tv_nsec - from->tv_nsec) / 1e9;
+}
+
+/*
+ * Sleep for the poll interval with SIGINT/SIGTERM unblocked only for the
+ * duration of the wait, so a signal can never slip in between the
+ * keep_running check and the sleep.
+ */
+static void wait_timeout(const struct timespec *timeout,
+                         const sigset_t *wait_mask) {
+    (void)ppoll(NULL, 0, timeout, wait_mask);
+}
+
+static void wait_interval(int seconds, const sigset_t *wait_mask) {
+    struct timespec timeout = {.tv_sec = seconds, .tv_nsec = 0};
+
+    wait_timeout(&timeout, wait_mask);
+}
+
+static void report_stats_error(const Config *config, const char *what) {
+    switch (errno) {
+        case ENODEV:
+        case ENOENT:
+        case ENXIO:
+        case EIO:
+            fprintf(stderr, "Error: %s is no longer available (%s): %s\n",
+                    config->device_name, what, strerror(errno));
+            break;
+        default:
+            fprintf(stderr, "Error: cannot read %s statistics from %s: %s\n",
+                    what, config->sys_path, strerror(errno));
+            break;
+    }
+}
+
+/*
+ * sync() runs in a child so a hung device cannot make SIGINT/SIGTERM
+ * ineffective. Returns 0 when done, 1 if interrupted by a signal, -1 on error.
+ */
+static int run_sync(const Config *config, const sigset_t *wait_mask) {
+    const struct timespec poll_delay = {.tv_sec = 0, .tv_nsec = 100000000L};
+    bool announce = !config->quiet && !config->json_output;
+    pid_t child;
+
+    if (announce &&
+        out_puts(config->interactive
+                     ? "\nSyncing all mounted filesystems... "
+                     : "Syncing all mounted filesystems...\n") != 0) {
+        return -1;
+    }
+    if (out_flush() != 0) {
+        return -1;
+    }
+
+    child = fork();
+    if (child < 0) {
+        sync(); /* cannot fork: fall back to an uninterruptible sync */
+    } else if (child == 0) {
+        sync();
+        _exit(0);
+    } else {
+        for (;;) {
+            int status;
+            pid_t waited = waitpid(child, &status, WNOHANG);
+
+            if (waited == child) {
+                if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                    fprintf(stderr, "Error: sync process failed\n");
+                    return -1;
+                }
+                break;
+            }
+            if (waited < 0 && errno != EINTR) {
+                fprintf(stderr, "Error: cannot wait for sync: %s\n",
+                        strerror(errno));
+                return -1;
+            }
+            if (!keep_running) {
+                (void)kill(child, SIGKILL);
+                return 1;
+            }
+            wait_timeout(&poll_delay, wait_mask);
+        }
+    }
+
+    if (announce && config->interactive && out_puts("Done.\n") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int monitor_loop(const Config *config, const sigset_t *wait_mask) {
     int file_descriptor = open(config->sys_path, O_RDONLY | O_CLOEXEC);
     BlockStats previous = {0};
-    int idle_seconds = 0;
+    struct timespec previous_time;
+    double idle_elapsed = 0.0;
+    int result = EXIT_SIGNAL;
 
     if (file_descriptor < 0) {
         fprintf(stderr, "Error: cannot open %s: %s\n", config->sys_path,
                 strerror(errno));
         return EXIT_ERROR;
     }
-    if (read_block_stats(file_descriptor, &previous) != 0) {
-        fprintf(stderr, "Error: cannot parse initial statistics from %s: %s\n",
-                config->sys_path, strerror(errno));
-        (void)close(file_descriptor);
-        return EXIT_ERROR;
+    if (read_block_stats(file_descriptor, &previous) != 0 ||
+        clock_gettime(CLOCK_MONOTONIC, &previous_time) != 0) {
+        report_stats_error(config, "initial");
+        result = EXIT_ERROR;
+        goto out;
     }
 
     if (!config->quiet && !config->json_output &&
@@ -431,79 +492,78 @@ static int monitor_loop(const Config *config) {
                    config->no_color ? "" : COLOR_CYAN, config->device_path,
                    config->no_color ? "" : COLOR_RESET,
                    config->idle_duration) != 0) {
-        (void)close(file_descriptor);
-        return EXIT_ERROR;
+        result = EXIT_ERROR;
+        goto out;
     }
 
     while (keep_running) {
         BlockStats current = {0};
         BlockDelta delta;
+        struct timespec current_time;
+        double elapsed;
         double read_speed;
         double write_speed;
+        int idle_seconds;
 
-        (void)sleep((unsigned int)config->poll_interval);
+        wait_interval(config->poll_interval, wait_mask);
         if (!keep_running) {
             break;
         }
-        if (read_block_stats(file_descriptor, &current) != 0) {
-            fprintf(stderr, "Error: cannot parse statistics from %s: %s\n",
-                    config->sys_path, strerror(errno));
-            (void)close(file_descriptor);
-            return EXIT_ERROR;
+        if (read_block_stats(file_descriptor, &current) != 0 ||
+            clock_gettime(CLOCK_MONOTONIC, &current_time) != 0) {
+            report_stats_error(config, "current");
+            result = EXIT_ERROR;
+            goto out;
+        }
+
+        /* Use measured time: the wait may overrun (load, SIGSTOP/SIGCONT). */
+        elapsed = elapsed_seconds(&previous_time, &current_time);
+        if (elapsed < MIN_ELAPSED_SECONDS) {
+            elapsed = MIN_ELAPSED_SECONDS;
         }
 
         delta = block_stats_delta(&previous, &current);
         read_speed = (double)delta.sectors_read * (double)SECTOR_SIZE /
-                     MB_DIVISOR / (double)config->poll_interval;
+                     MB_DIVISOR / elapsed;
         write_speed = (double)delta.sectors_written * (double)SECTOR_SIZE /
-                      MB_DIVISOR / (double)config->poll_interval;
-        idle_seconds = delta.active ? 0 : idle_seconds + config->poll_interval;
+                      MB_DIVISOR / elapsed;
+        idle_elapsed = delta.active ? 0.0 : idle_elapsed + elapsed;
+        idle_seconds = (int)(idle_elapsed + 0.5);
 
         if (!config->quiet &&
             print_sample(config, &current, &delta, idle_seconds,
                          read_speed, write_speed) != 0) {
-            (void)close(file_descriptor);
-            return EXIT_ERROR;
+            result = EXIT_ERROR;
+            goto out;
         }
 
         if (idle_seconds >= config->idle_duration) {
-            if (config->auto_sync) {
-                if (!config->quiet && !config->json_output &&
-                    out_puts(config->interactive
-                                 ? "\nSyncing all mounted filesystems... "
-                                 : "Syncing all mounted filesystems...\n") != 0) {
-                    (void)close(file_descriptor);
-                    return EXIT_ERROR;
-                }
-                if (out_flush() != 0) {
-                    (void)close(file_descriptor);
-                    return EXIT_ERROR;
-                }
-                sync();
-                if (!config->quiet && !config->json_output &&
-                    config->interactive && out_puts("Done.\n") != 0) {
-                    (void)close(file_descriptor);
-                    return EXIT_ERROR;
-                }
+            int sync_result = config->auto_sync ? run_sync(config, wait_mask) : 0;
+
+            if (sync_result > 0) {
+                result = EXIT_SIGNAL;
+            } else if (sync_result < 0 ||
+                       print_final_status(config, idle_seconds) != 0 ||
+                       out_flush() != 0) {
+                result = EXIT_ERROR;
+            } else {
+                result = EXIT_SUCCESS_IDLE;
             }
-            if (print_final_status(config, idle_seconds) != 0 ||
-                out_flush() != 0) {
-                (void)close(file_descriptor);
-                return EXIT_ERROR;
-            }
-            (void)close(file_descriptor);
-            return EXIT_SUCCESS_IDLE;
+            goto out;
         }
         previous = current;
+        previous_time = current_time;
     }
 
+out:
     (void)close(file_descriptor);
-    return EXIT_SIGNAL;
+    return result;
 }
 
 int main(int argc, char *argv[]) {
     Config config = {0};
     DeviceResolveResult resolve_result;
+    sigset_t wait_mask;
     int option;
 
     if (setvbuf(stdout, NULL, _IOLBF, 0) != 0) {
@@ -586,6 +646,14 @@ int main(int argc, char *argv[]) {
                 argv[optind + 1]);
         return EXIT_ERROR;
     }
+    if (config.quiet && config.verbose) {
+        fprintf(stderr, "Error: --quiet and --verbose are mutually exclusive\n");
+        return EXIT_ERROR;
+    }
+    if (config.json_output && config.verbose) {
+        fprintf(stderr, "Error: --json and --verbose are mutually exclusive\n");
+        return EXIT_ERROR;
+    }
     if (config.idle_duration < config.poll_interval) {
         fprintf(stderr,
                 "Notice: idle-time (%ds) is less than interval (%ds); "
@@ -605,7 +673,7 @@ int main(int argc, char *argv[]) {
         return EXIT_ERROR;
     }
 
-    setup_signals();
+    setup_signals(&wait_mask);
     if (atexit(cleanup_terminal) != 0) {
         fprintf(stderr, "Error: cannot register terminal cleanup\n");
         return EXIT_ERROR;
@@ -618,5 +686,5 @@ int main(int argc, char *argv[]) {
         cursor_hidden = true;
     }
 
-    return monitor_loop(&config);
+    return monitor_loop(&config, &wait_mask);
 }

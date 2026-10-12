@@ -14,40 +14,46 @@ SANITIZER_CFLAGS = -O1 -g -fno-omit-frame-pointer \
 	-fsanitize=address,undefined
 SANITIZER_LDFLAGS = -fsanitize=address,undefined
 
+VERSION = 1.3.0
+VERSION_FLAGS = -DVERSION=\"$(VERSION)\"
+
 TARGET = blk_monitor
 DEBUG_TARGET = blk_monitor-debug
 ASAN_TARGET = blk_monitor-asan
 UNIT_TARGET = tests/unit
 UNIT_ASAN_TARGET = tests/unit-asan
 SOURCES = blk_monitor.c blk_monitor_core.c
-HEADERS = blk_monitor_core.h
+HEADERS = blk_monitor_core.h Makefile
 MANPAGE = blk_monitor.1
 
 PREFIX ?= /usr/local
 BINDIR = $(DESTDIR)$(PREFIX)/bin
 MANDIR = $(DESTDIR)$(PREFIX)/share/man/man1
 
-.PHONY: all release debug asan check check-asan check-e2e lint clean \
+.PHONY: print-version all release debug asan check check-asan check-e2e lint clean \
 	install uninstall
 
 all: release
 
+print-version:
+	@echo $(VERSION)
+
 release: $(TARGET)
 
 $(TARGET): $(SOURCES) $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(COMMON_CFLAGS) $(HARDEN_CFLAGS) \
+	$(CC) $(CPPFLAGS) $(VERSION_FLAGS) $(CFLAGS) $(COMMON_CFLAGS) $(HARDEN_CFLAGS) \
 		$(LDFLAGS) $(HARDEN_LDFLAGS) -o $@ $(SOURCES)
 
 debug: $(DEBUG_TARGET)
 
 $(DEBUG_TARGET): $(SOURCES) $(HEADERS)
-	$(CC) $(CPPFLAGS) $(DEBUG_CFLAGS) $(COMMON_CFLAGS) -fPIE \
+	$(CC) $(CPPFLAGS) $(VERSION_FLAGS) $(DEBUG_CFLAGS) $(COMMON_CFLAGS) -fPIE \
 		$(LDFLAGS) -pie -o $@ $(SOURCES)
 
 asan: $(ASAN_TARGET)
 
 $(ASAN_TARGET): $(SOURCES) $(HEADERS)
-	$(CC) $(CPPFLAGS) $(SANITIZER_CFLAGS) $(COMMON_CFLAGS) -fPIE \
+	$(CC) $(CPPFLAGS) $(VERSION_FLAGS) $(SANITIZER_CFLAGS) $(COMMON_CFLAGS) -fPIE \
 		$(LDFLAGS) $(SANITIZER_LDFLAGS) -pie -o $@ $(SOURCES)
 
 $(UNIT_TARGET): tests/unit.c blk_monitor_core.c $(HEADERS)
@@ -77,7 +83,7 @@ check-e2e: $(TARGET)
 lint:
 	shellcheck tests/smoke.sh
 	clang-tidy -checks='clang-analyzer-*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,bugprone-*,-bugprone-reserved-identifier,-bugprone-easily-swappable-parameters' \
-		blk_monitor.c blk_monitor_core.c -- -std=c11 -I.
+		blk_monitor.c blk_monitor_core.c -- -std=c11 -I. $(VERSION_FLAGS)
 
 clean:
 	rm -f $(TARGET) $(DEBUG_TARGET) $(ASAN_TARGET) $(UNIT_TARGET) \

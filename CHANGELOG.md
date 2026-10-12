@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-12
+
+### Changed
+- Speeds and idle time use measured monotonic time instead of the nominal poll
+  interval.
+- `SIGINT`/`SIGTERM` are handled race-free and interrupt the poll wait at once.
+- `sync()` runs in a child process so a signal still stops the monitor if the
+  device hangs (exit code 2).
+- A device that disappears mid-run is reported as "no longer available".
+- `--quiet` with `--verbose`, and `--json` with `--verbose`, are rejected.
+- The version is defined once, in the Makefile.
+- Sysfs device resolution moved to the core library and is unit-tested.
+
 ## [1.2.0] - 2026-06-23
 
 ### Changed
@@ -108,6 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI: `-i`, `-t`, `-s`, `-S`, `-q`, `-v`, `-C`, `-h`, `-V`.
 - Color-coded progress bar UI with cursor-hidden full-screen mode.
 
+[1.3.0]: https://github.com/paolostivanin/blk-monitor/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/paolostivanin/blk-monitor/compare/v1.1.2...v1.2.0
 [1.1.2]: https://github.com/paolostivanin/blk-monitor/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/paolostivanin/blk-monitor/compare/v1.1.0...v1.1.1

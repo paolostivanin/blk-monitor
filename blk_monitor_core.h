@@ -32,6 +32,24 @@ typedef struct {
     bool counters_reset;
 } BlockDelta;
 
+typedef enum {
+    DEVICE_RESOLVE_OK = 0,
+    DEVICE_RESOLVE_NOT_FOUND,
+    DEVICE_RESOLVE_NOT_BLOCK,
+    DEVICE_RESOLVE_PATH_TOO_LONG,
+    DEVICE_RESOLVE_SYSFS_UNAVAILABLE
+} DeviceResolveResult;
+
+/*
+ * Map a block device name (e.g. "nvme0n1p1") to the whole-disk name and the
+ * path of its readable statistics file below sysfs_root (normally "/sys").
+ * Partitions resolve to their parent disk.
+ */
+DeviceResolveResult blk_sysfs_resolve(const char *sysfs_root,
+                                      const char *device_name,
+                                      char *base_name, size_t base_size,
+                                      char *stat_path, size_t stat_size);
+
 int block_stats_parse(const char *text, BlockStats *stats);
 BlockDelta block_stats_delta(const BlockStats *previous, const BlockStats *current);
 

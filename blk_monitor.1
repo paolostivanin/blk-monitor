@@ -1,4 +1,4 @@
-.TH BLK_MONITOR 1 "2026-06-23" "blk_monitor 1.2.0" "User Commands"
+.TH BLK_MONITOR 1 "2026-10-12" "blk_monitor 1.3.0" "User Commands"
 .SH NAME
 blk_monitor \- report when observed block-device I/O has been idle
 .SH SYNOPSIS
@@ -43,6 +43,10 @@ Suppress samples and print exactly one final status line.
 .TP
 .BR \-v ", " \-\-verbose
 Print one status line per poll.
+Cannot be combined with
+.B \-\-quiet
+or
+.BR \-\-json .
 .TP
 .BR \-j ", " \-\-json
 Print one JSON object per poll and a final idle event after any requested

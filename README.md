@@ -106,7 +106,7 @@ only the monitored device. `unmount_performed` is always `false`.
 |------|---------|
 | `0` | The observed I/O-idle threshold was reached |
 | `1` | Invalid input, unavailable/malformed statistics, or output failure |
-| `2` | Interrupted by `SIGINT` or `SIGTERM` before reaching the threshold |
+| `2` | Interrupted by `SIGINT` or `SIGTERM` before reaching the threshold (including during `sync()`) |
 
 ## How idle detection works
 

@@ -1,10 +1,14 @@
+#define _XOPEN_SOURCE 700
+
 #include "blk_monitor_core.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define BASE_FIELD_COUNT 11U
 #define DISCARD_FIELD_COUNT 15U
@@ -143,4 +147,62 @@ BlockDelta block_stats_delta(const BlockStats *previous,
           current->time_flushing_ms != previous->time_flushing_ms));
 
     return delta;
+}
+
+static const char *path_basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash == NULL ? path : slash + 1;
+}
+
+static bool fits(int written, size_t size) {
+    return written >= 0 && (size_t)written < size;
+}
+
+DeviceResolveResult blk_sysfs_resolve(const char *sysfs_root,
+                                      const char *device_name,
+                                      char *base_name, size_t base_size,
+                                      char *stat_path, size_t stat_size) {
+    char class_path[PATH_MAX];
+    char resolved_class[PATH_MAX];
+    char partition_path[PATH_MAX];
+    const char *name = device_name;
+    int written;
+
+    if (*device_name == '\0') {
+        return DEVICE_RESOLVE_NOT_FOUND;
+    }
+    written = snprintf(class_path, sizeof(class_path), "%s/class/block/%s",
+                       sysfs_root, device_name);
+    if (!fits(written, sizeof(class_path))) {
+        return DEVICE_RESOLVE_PATH_TOO_LONG;
+    }
+    if (realpath(class_path, resolved_class) == NULL) {
+        return DEVICE_RESOLVE_SYSFS_UNAVAILABLE;
+    }
+    written = snprintf(partition_path, sizeof(partition_path), "%s/partition",
+                       class_path);
+    if (!fits(written, sizeof(partition_path))) {
+        return DEVICE_RESOLVE_PATH_TOO_LONG;
+    }
+    if (access(partition_path, F_OK) == 0) {
+        char *slash = strrchr(resolved_class, '/');
+        if (slash == NULL || slash == resolved_class) {
+            return DEVICE_RESOLVE_SYSFS_UNAVAILABLE;
+        }
+        *slash = '\0';
+        name = path_basename(resolved_class);
+    }
+
+    if (!fits(snprintf(base_name, base_size, "%s", name), base_size)) {
+        return DEVICE_RESOLVE_PATH_TOO_LONG;
+    }
+    written = snprintf(stat_path, stat_size, "%s/block/%s/stat", sysfs_root,
+                       base_name);
+    if (!fits(written, stat_size)) {
+        return DEVICE_RESOLVE_PATH_TOO_LONG;
+    }
+    if (access(stat_path, R_OK) != 0) {
+        return DEVICE_RESOLVE_SYSFS_UNAVAILABLE;
+    }
+    return DEVICE_RESOLVE_OK;
 }
