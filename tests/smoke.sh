@@ -177,7 +177,7 @@ else
 
     image=$(mktemp --suffix=.img)
     loop_device=
-    # shellcheck disable=SC2329 # Invoked by the EXIT trap.
+    # shellcheck disable=SC2317,SC2329 # Invoked by the EXIT trap.
     cleanup() {
         if [[ -n $loop_device ]]; then
             "${sudo_command[@]}" losetup -d "$loop_device" 2>/dev/null || true
